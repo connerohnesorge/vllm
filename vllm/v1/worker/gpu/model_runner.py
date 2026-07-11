@@ -21,6 +21,7 @@ import functools
 import gc
 import time
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -1110,6 +1111,110 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             idx_mapping, num_sampled, self.req_states.num_computed_tokens.gpu
         )
 
+    def _run_sequential_spec_forward(
+        self,
+        input_batch: InputBatch,
+        scheduler_output: SchedulerOutput,
+        num_tokens_across_dp: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        """Run each verification position through the ordinary decode path."""
+        query_lens = np.diff(input_batch.query_start_loc_np[: input_batch.num_reqs + 1])
+        assert input_batch.num_draft_tokens and not np.any(input_batch.is_prefilling_np)
+        assert np.all(query_lens == query_lens[0]), query_lens
+        num_reqs = input_batch.num_reqs
+        device = input_batch.input_ids.device
+        starts = input_batch.query_start_loc_np[:num_reqs]
+        hidden_parts: list[torch.Tensor] = []
+        aux_parts: list[list[torch.Tensor]] = []
+        self.kv_connector.pre_forward(scheduler_output)
+
+        for step in range(int(query_lens[0])):
+            token_indices = torch.as_tensor(starts + step, device=device)
+            query_start_np = np.arange(num_reqs + 1, dtype=np.int32)
+            query_start = torch.arange(num_reqs + 1, dtype=torch.int32, device=device)
+            seq_lens = input_batch.seq_lens[:num_reqs] - (query_lens[0] - step - 1)
+            step_batch = replace(
+                input_batch,
+                num_reqs_after_padding=num_reqs,
+                num_scheduled_tokens=np.ones(num_reqs, dtype=np.int32),
+                num_tokens=num_reqs,
+                num_tokens_after_padding=num_reqs,
+                num_draft_tokens=0,
+                num_draft_tokens_per_req=None,
+                query_start_loc=query_start,
+                query_start_loc_np=query_start_np,
+                seq_lens=seq_lens,
+                seq_lens_cpu_upper_bound=input_batch.seq_lens_cpu_upper_bound[:num_reqs]
+                - (query_lens[0] - step - 1),
+                num_computed_tokens_np=input_batch.num_computed_tokens_np + step,
+                input_ids=input_batch.input_ids[token_indices],
+                positions=input_batch.positions[token_indices],
+                is_padding=input_batch.is_padding[token_indices],
+                logits_indices=torch.arange(num_reqs, device=device),
+                cu_num_logits=query_start,
+                cu_num_logits_np=query_start_np,
+                expanded_idx_mapping=input_batch.idx_mapping,
+                expanded_local_pos=torch.zeros(
+                    num_reqs, dtype=torch.int32, device=device
+                ),
+            )
+            if step:
+                self.model_state.postprocess_state(step_batch.idx_mapping, 1)
+            block_tables, slot_mappings = self.prepare_attn(step_batch)
+            attn_metadata = self.model_state.prepare_attn(
+                step_batch,
+                CUDAGraphMode.NONE,
+                block_tables,
+                slot_mappings,
+                self.attn_groups,
+                self.kv_cache_config,
+            )
+            slots_by_layer = build_slot_mappings_by_layer(
+                slot_mappings, self.kv_cache_config
+            )
+            model_inputs = {
+                "input_ids": step_batch.input_ids,
+                "positions": step_batch.positions,
+                "inputs_embeds": None,
+                "intermediate_tensors": None,
+                **self.model_state.prepare_inputs(step_batch, self.req_states),
+            }
+            batch_descriptor = BatchDescriptor(num_tokens=num_reqs, has_lora=False)
+            with set_forward_context(
+                attn_metadata,
+                self.vllm_config,
+                num_tokens=num_reqs,
+                cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                num_tokens_across_dp=num_tokens_across_dp,
+                batch_descriptor=batch_descriptor,
+                slot_mapping=slots_by_layer,
+                skip_compiled=True,
+                is_padding=step_batch.is_padding,
+            ):
+                output = self.model(**model_inputs)
+            if self.use_aux_hidden_state_outputs:
+                hidden, aux = output
+                aux_parts.append(aux)
+            else:
+                hidden, aux = output, None
+            hidden_parts.append(hidden)
+
+        hidden_states = torch.empty(
+            (input_batch.num_tokens, hidden_parts[0].shape[-1]),
+            dtype=hidden_parts[0].dtype,
+            device=device,
+        )
+        for step, hidden in enumerate(hidden_parts):
+            hidden_states[torch.as_tensor(starts + step, device=device)] = hidden
+        aux_hidden_states = None
+        if aux_parts:
+            aux_hidden_states = [torch.empty_like(hidden_states) for _ in aux_parts[0]]
+            for step, parts in enumerate(aux_parts):
+                indices = torch.as_tensor(starts + step, device=device)
+                for dst, src in zip(aux_hidden_states, parts):
+                    dst[indices] = src
+        return hidden_states, aux_hidden_states
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -1284,7 +1389,21 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.eplb.prepare_forward(self.model_config, input_batch.num_tokens)
 
         # Run model.
-        if batch_desc.cg_mode == CUDAGraphMode.FULL:
+        sequential_output = None
+        if (
+            input_batch.num_draft_tokens
+            and self.model_state.__class__.__name__ == "MambaHybridModelState"
+            and not np.any(input_batch.is_prefilling_np)
+        ):
+            assert self.is_first_pp_rank and self.is_last_pp_rank
+            assert inputs_embeds is None
+            sequential_output = self._run_sequential_spec_forward(
+                input_batch, scheduler_output, num_tokens_across_dp
+            )
+
+        if sequential_output is not None:
+            model_output = sequential_output
+        elif batch_desc.cg_mode == CUDAGraphMode.FULL:
             # Use explicit cudagraph replay for FULL mode.
             # NOTE(woosuk): Here, we don't need to pass the input tensors,
             # because they are already copied to the CUDA graph input buffers.
