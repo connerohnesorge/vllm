@@ -157,7 +157,9 @@ class RejectionSampler:
                 apply_temperature=False,
                 use_fp64=self.sampler.use_fp64_gumbel,
             ).view(input_batch.num_reqs, q)
-            draft_rows = draft_sampled.view(input_batch.num_reqs, q)
+            draft_rows = draft_sampled.view(input_batch.num_reqs, q).to(
+                target_sampled.dtype
+            )
             sampled, num_sampled = _pack_sequential_samples(
                 target_sampled, draft_rows
             )
