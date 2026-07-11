@@ -162,6 +162,7 @@ class FP8ScaledMMLinearKernel(
             x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
         if (
             os.getenv("VLLM_AUDEX_INVARIANT_FP8") == "1"
+            and w.shape[1] >= 200_000
             and x_2d_q.shape[0] > 2
             and x_2d_q.shape[0] % 2 == 0
         ):
