@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -8,7 +9,6 @@ from typing import Generic, TypeVar
 
 import torch
 
-from vllm.model_executor.layers.audex_invariant import groups as invariant_groups
 from vllm.model_executor.layers.fusion.quant_activation import (
     QuantizedActivation,
     as_quantized_activation,
@@ -157,33 +157,36 @@ class FP8ScaledMMLinearKernel(
         output_shape = [*orig_shape[:-1], w.shape[1]]
         out_dtype = orig_dtype if maybe_out_dtype is None else maybe_out_dtype
 
-        groups = invariant_groups()
-        if groups and max(max(group.tokens) for group in groups) < x_2d.shape[0]:
-            output = x_2d.new_empty((x_2d.shape[0], w.shape[1]), dtype=out_dtype)
-            for group in groups:
-                indices = torch.tensor(group.tokens, device=x_2d.device)
-                if qa is None:
-                    pair_input, pair_scale = self.quant_fp8(
-                        x_2d[indices], x_s, x_s_ub
-                    )
-                else:
-                    pair_input = x_2d[indices]
-                    pair_scale = x_s[indices] if x_s.shape[0] == x_2d.shape[0] else x_s
+        x_2d_q = x_2d
+        if qa is None:
+            x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
+        if (
+            os.getenv("VLLM_AUDEX_INVARIANT_FP8") == "1"
+            and w.shape[1] >= 200_000
+            and x_2d_q.shape[0] > 2
+            and x_2d_q.shape[0] % 2 == 0
+        ):
+            # AudEx CFG stores each request contiguously. Preserve the ordinary
+            # two-row conditional/unconditional kernel shape at every position.
+            half = x_2d_q.shape[0] // 2
+            output = x_2d_q.new_empty((x_2d_q.shape[0], w.shape[1]), dtype=out_dtype)
+            for position in range(half):
+                indices = torch.tensor(
+                    [position, position + half], device=x_2d_q.device
+                )
+                pair_scale = x_s[indices] if x_s.shape[0] == x_2d_q.shape[0] else x_s
                 pair = self.apply_scaled_mm(
-                    A=pair_input,
+                    A=x_2d_q[indices],
                     B=w,
                     out_dtype=out_dtype,
                     As=pair_scale,
                     Bs=w_s,
                     bias=bias,
-                    output_shape=[len(group.tokens), w.shape[1]],
+                    output_shape=[2, w.shape[1]],
                 )
                 output[indices] = pair
             return output.view(*output_shape)
 
-        x_2d_q = x_2d
-        if qa is None:
-            x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
         return self.apply_scaled_mm(
             A=x_2d_q,
             B=w,

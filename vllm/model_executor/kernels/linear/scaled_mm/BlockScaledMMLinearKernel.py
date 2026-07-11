@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
-
-from vllm.model_executor.layers.audex_invariant import groups as invariant_groups
 from typing_extensions import Self
 
 from vllm.model_executor.layers.quantization.input_quant_fp8 import QuantFP8
@@ -118,39 +117,44 @@ class Fp8BlockScaledMMLinearKernel(
         input_2d = x.view(-1, x.shape[-1])
         output_shape = [*x.shape[:-1], weight.shape[0]]
 
-        groups = invariant_groups()
-        if groups and max(max(group.tokens) for group in groups) < input_2d.shape[0]:
-            output = input_2d.new_empty(
-                (input_2d.shape[0], weight.shape[0]), dtype=out_dtype
+        if self.apply_input_quant:
+            q_input, input_scale = self.quant_fp8(
+                input_2d, input_scale, scale_up, use_triton=self.use_triton
             )
-            for group in groups:
-                indices = torch.tensor(group.tokens, device=input_2d.device)
-                if self.apply_input_quant:
-                    pair_input, pair_scale = self.quant_fp8(
-                        input_2d[indices],
-                        input_scale,
-                        scale_up,
-                        use_triton=self.use_triton,
-                    )
-                else:
-                    pair_input = input_2d[indices]
-                    pair_scale = input_2d.new_empty(1)
+        else:
+            q_input = input_2d
+            # Provide a concrete placeholder so apply_block_scaled_mm args are
+            # always Tensors. Subclasses with apply_input_quant=False must not
+            # use As in apply_block_scaled_mm.
+            input_scale = (
+                input_scale if input_scale is not None else input_2d.new_empty(1)
+            )
+
+        if (
+            os.getenv("VLLM_AUDEX_INVARIANT_FP8") == "1"
+            and q_input.shape[0] > 2
+            and q_input.shape[0] % 2 == 0
+        ):
+            half = q_input.shape[0] // 2
+            output = q_input.new_empty(
+                (q_input.shape[0], weight.shape[0]), dtype=out_dtype
+            )
+            for position in range(half):
+                indices = torch.tensor(
+                    [position, position + half], device=q_input.device
+                )
                 pair = self.apply_block_scaled_mm(
-                    A=pair_input,
+                    A=q_input[indices],
                     B=weight,
-                    As=pair_scale,
+                    As=(
+                        input_scale[indices]
+                        if input_scale.shape[0] == q_input.shape[0]
+                        else input_scale
+                    ),
                     Bs=weight_scale,
                 )
                 output[indices] = pair
         else:
-            if self.apply_input_quant:
-                q_input, input_scale = self.quant_fp8(
-                    input_2d, input_scale, scale_up, use_triton=self.use_triton
-                )
-            else:
-                q_input = input_2d
-                # Subclasses with apply_input_quant=False do not use As.
-                input_scale = input_2d.new_empty(1)
             output = self.apply_block_scaled_mm(
                 A=q_input,
                 B=weight,
