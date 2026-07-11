@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -105,10 +106,10 @@ class FusedMoEModularMethod(FusedMoEMethodBase, CustomOp):
     ) -> torch.Tensor:
         assert self.moe_kernel is not None
         groups = invariant_groups()
-        if groups:
+        if groups and os.getenv("VLLM_AUDEX_INVARIANT_MOE") == "1":
             output = torch.empty_like(x)
             for group in groups:
-                indices = torch.tensor(group, device=x.device)
+                indices = torch.tensor(group.tokens, device=x.device)
                 output[indices] = self.moe_kernel.apply(
                     hidden_states=x[indices],
                     w1=layer.w13_weight,

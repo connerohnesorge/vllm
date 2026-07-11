@@ -3,6 +3,7 @@
 """Attention layer with FlashAttention."""
 
 import copy
+import os
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -10,6 +11,10 @@ import numpy as np
 import torch
 
 from vllm.model_executor.layers.attention import Attention
+from vllm.model_executor.layers.audex_invariant import (
+    groups as invariant_groups,
+    suspend_groups,
+)
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import (
     canonicalize_singleton_dim_strides,
@@ -890,6 +895,38 @@ class FlashAttentionImpl(AttentionImpl):
             # queries are quantized in the attention layer
             key_cache = key_cache.view(current_platform.fp8_dtype())
             value_cache = value_cache.view(current_platform.fp8_dtype())
+
+        groups = invariant_groups()
+        if groups and os.getenv("VLLM_AUDEX_INVARIANT_ATTENTION") == "1":
+            for group in groups:
+                indices = torch.tensor(group.tokens, device=query.device)
+                requests = torch.tensor(group.requests, device=query.device)
+                remaining = torch.tensor(
+                    group.remaining, dtype=torch.int32, device=query.device
+                )
+                metadata = copy.copy(attn_metadata)
+                metadata.num_actual_tokens = len(group.tokens)
+                metadata.query_start_loc = torch.arange(
+                    len(group.tokens) + 1, dtype=torch.int32, device=query.device
+                )
+                metadata.max_query_len = 1
+                metadata.seq_lens = attn_metadata.seq_lens[requests] - remaining
+                metadata.block_table = attn_metadata.block_table[requests]
+                metadata.scheduler_metadata = None
+                metadata.use_cascade = False
+                group_output = torch.empty_like(query[indices])
+                with suspend_groups():
+                    self.forward(
+                        layer,
+                        query[indices],
+                        key[indices],
+                        value[indices],
+                        kv_cache,
+                        metadata,
+                        group_output,
+                    )
+                output[indices] = group_output
+            return output
 
         if not attn_metadata.use_cascade:
             cu_seqlens_q = attn_metadata.query_start_loc
