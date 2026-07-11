@@ -460,7 +460,7 @@ def _selective_scan_update_kernel(
         # Without it, the FP32 accumulator spans draft positions and can select
         # different tokens than sequential decoding for near-tied logits.
         if IS_SPEC_DECODING:
-            state = state.to(token_dst_ptrs.dtype.element_ty).to(tl.float32)
+            state = state.to(state_ptr_base.dtype.element_ty).to(tl.float32)
 
         x_ptr += stride_x_batch
         dt_ptr += stride_dt_batch
