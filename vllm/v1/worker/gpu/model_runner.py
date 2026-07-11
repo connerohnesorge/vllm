@@ -1395,9 +1395,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             and input_batch.num_draft_tokens
             and self.model_state.__class__.__name__ == "MambaHybridModelState"
             and not np.any(input_batch.is_prefilling_np)
+            and inputs_embeds is None
         ):
             assert self.is_first_pp_rank and self.is_last_pp_rank
-            assert inputs_embeds is None
             sequential_output = self._run_sequential_spec_forward(
                 input_batch, scheduler_output, num_tokens_across_dp
             )
