@@ -1,0 +1,13 @@
+[package]
+name = "vllm-cuda-oxide-invariant"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+cuda-device = { git = "https://github.com/NVlabs/cuda-oxide", rev = "29396b7f643b1d42eb4d80b7347ad27bb011525a" }
+cuda-host = { git = "https://github.com/NVlabs/cuda-oxide", rev = "29396b7f643b1d42eb4d80b7347ad27bb011525a" }
+cuda-core = { git = "https://github.com/NVlabs/cuda-oxide", rev = "29396b7f643b1d42eb4d80b7347ad27bb011525a" }
+half = "2.7"
