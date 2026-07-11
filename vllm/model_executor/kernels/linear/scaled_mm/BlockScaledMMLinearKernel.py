@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
+
+from vllm.model_executor.layers.audex_invariant import groups as invariant_groups
 from typing_extensions import Self
 
 from vllm.model_executor.layers.quantization.input_quant_fp8 import QuantFP8
@@ -130,19 +131,13 @@ class Fp8BlockScaledMMLinearKernel(
                 input_scale if input_scale is not None else input_2d.new_empty(1)
             )
 
-        if (
-            os.getenv("VLLM_AUDEX_INVARIANT_FP8") == "1"
-            and q_input.shape[0] > 2
-            and q_input.shape[0] % 2 == 0
-        ):
-            half = q_input.shape[0] // 2
+        groups = invariant_groups()
+        if groups and max(max(group.tokens) for group in groups) < q_input.shape[0]:
             output = q_input.new_empty(
                 (q_input.shape[0], weight.shape[0]), dtype=out_dtype
             )
-            for position in range(half):
-                indices = torch.tensor(
-                    [position, position + half], device=q_input.device
-                )
+            for group in groups:
+                indices = torch.tensor(group.tokens, device=q_input.device)
                 pair = self.apply_block_scaled_mm(
                     A=q_input[indices],
                     B=weight,

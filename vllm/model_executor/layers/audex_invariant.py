@@ -38,6 +38,7 @@ def verification_groups(batch: "InputBatch"):
         os.getenv(name) == "1"
         for name in (
             "VLLM_AUDEX_INVARIANT_ATTENTION",
+            "VLLM_AUDEX_INVARIANT_FP8",
             "VLLM_AUDEX_INVARIANT_MOE",
             "VLLM_AUDEX_INVARIANT_ROUTER",
             "VLLM_AUDEX_INVARIANT_TOPK",
