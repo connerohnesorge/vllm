@@ -18,9 +18,11 @@
 # limitations under the License.
 """Inference-only NemotronH model."""
 
+import os
 import typing
 from collections.abc import Callable, Iterable
 from itertools import islice
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -585,6 +587,11 @@ class NemotronHModel(nn.Module, EagleModelMixin):
         )
 
         self.norm_f = RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+        self.register_buffer(
+            "_audex_boundary_capture",
+            torch.empty(4, 2, 8, config.hidden_size, dtype=torch.bfloat16),
+            persistent=False,
+        )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -616,9 +623,28 @@ class NemotronHModel(nn.Module, EagleModelMixin):
                 hidden_states=hidden_states,
                 residual=residual,
             )
+            if (
+                idx in (32, 33, 34, 35)
+                and Path("/tmp/audex-enable-boundary-capture").exists()
+                and hidden_states.shape[0] <= 8
+            ):
+                slot = idx - 32
+                rows = hidden_states.shape[0]
+                self._audex_boundary_capture[slot, 0, :rows].copy_(hidden_states)
+                self._audex_boundary_capture[slot, 1, :rows].copy_(residual)
             self._maybe_add_hidden_state(
                 aux_hidden_states, idx + 1, hidden_states, residual
             )
+
+        capture_root = os.getenv("AUDEX_LAYER_BOUNDARY_CAPTURE_DIR")
+        if capture_root and Path("/tmp/audex-enable-boundary-capture").exists():
+            capture_path = Path(capture_root) / f"q{hidden_states.shape[0]}.pt"
+            if not capture_path.exists():
+                capture_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    self._audex_boundary_capture[:, :, : hidden_states.shape[0]].cpu(),
+                    capture_path,
+                )
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
