@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
+
 import torch
 
 from vllm.config import SpeculativeConfig
@@ -12,12 +14,32 @@ from vllm.v1.worker.gpu.input_batch import (
 )
 from vllm.v1.worker.gpu.metrics.logits import get_num_nans
 from vllm.v1.worker.gpu.sample.logprob import compute_topk_logprobs
+from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
 from vllm.v1.worker.gpu.sample.sampler import Sampler
 from vllm.v1.worker.gpu.sample.states import NO_LOGPROBS
 from vllm.v1.worker.gpu.spec_decode.rejection_sampler_utils import (
     rejection_sample,
 )
+
+
+def _pack_sequential_samples(
+    target_sampled: torch.Tensor, draft_rows: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Accept the matching draft prefix and commit the first target mismatch."""
+    matches = target_sampled[:, :-1].eq(draft_rows[:, 1:])
+    accepted = torch.cumprod(matches.to(torch.int32), dim=1).sum(
+        dim=1, dtype=torch.int32
+    )
+    sampled = draft_rows.new_full(draft_rows.shape, -1)
+    prefix = (
+        torch.arange(draft_rows.shape[1] - 1, device=sampled.device)[None]
+        < accepted[:, None]
+    )
+    sampled[:, :-1] = torch.where(prefix, draft_rows[:, 1:], -1)
+    accepted_col = accepted[:, None].to(torch.int64)
+    sampled.scatter_(1, accepted_col, target_sampled.gather(1, accepted_col))
+    return sampled, accepted + 1
 
 
 @triton.jit
@@ -118,22 +140,44 @@ class RejectionSampler:
             draft_sampled,
             input_batch.expanded_local_pos,
         )
-        sampled, num_sampled = rejection_sample(
-            processed_logits,
-            draft_logits,
-            draft_sampled,
-            input_batch.cu_num_logits,
-            pos,
-            input_batch.idx_mapping,
-            input_batch.expanded_idx_mapping,
-            input_batch.expanded_local_pos,
-            self.sampler.sampling_states.temperature.gpu,
-            self.sampler.sampling_states.seeds.gpu,
-            self.num_speculative_steps,
-            self.synthetic_conditional_rates,
-            use_fp64=self.sampler.use_fp64_gumbel,
-            use_block_verification=self.use_block_verification,
-        )
+        if os.getenv("VLLM_AUDEX_SEQUENTIAL_VERIFY") == "1":
+            lengths = (
+                input_batch.cu_num_logits_np[1:]
+                - input_batch.cu_num_logits_np[:-1]
+            )
+            if not (lengths == lengths[0]).all():
+                raise RuntimeError("sequential verification requires equal row lengths")
+            q = int(lengths[0])
+            target_sampled = gumbel_sample(
+                processed_logits,
+                input_batch.expanded_idx_mapping,
+                self.sampler.sampling_states.temperature.gpu,
+                self.sampler.sampling_states.seeds.gpu,
+                pos,
+                apply_temperature=False,
+                use_fp64=self.sampler.use_fp64_gumbel,
+            ).view(input_batch.num_reqs, q)
+            draft_rows = draft_sampled.view(input_batch.num_reqs, q)
+            sampled, num_sampled = _pack_sequential_samples(
+                target_sampled, draft_rows
+            )
+        else:
+            sampled, num_sampled = rejection_sample(
+                processed_logits,
+                draft_logits,
+                draft_sampled,
+                input_batch.cu_num_logits,
+                pos,
+                input_batch.idx_mapping,
+                input_batch.expanded_idx_mapping,
+                input_batch.expanded_local_pos,
+                self.sampler.sampling_states.temperature.gpu,
+                self.sampler.sampling_states.seeds.gpu,
+                self.num_speculative_steps,
+                self.synthetic_conditional_rates,
+                use_fp64=self.sampler.use_fp64_gumbel,
+                use_block_verification=self.use_block_verification,
+            )
         logprobs_tensors = self._get_logprobs_tensors(
             input_batch,
             sampled,
