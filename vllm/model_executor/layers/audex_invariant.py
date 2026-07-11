@@ -39,6 +39,7 @@ def verification_groups(batch: "InputBatch"):
         for name in (
             "VLLM_AUDEX_INVARIANT_ATTENTION",
             "VLLM_AUDEX_INVARIANT_MOE",
+            "VLLM_AUDEX_INVARIANT_ROUTER",
         )
     )
     if not enabled or not batch.num_draft_tokens:

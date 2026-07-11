@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
+
 import torch
 from torch.nn.parameter import Parameter
 
 import vllm._custom_ops as ops
 from vllm.model_executor.custom_op import PluggableLayer
+from vllm.model_executor.layers.audex_invariant import (
+    groups as invariant_groups,
+    suspend_groups,
+)
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import direct_register_custom_op
@@ -119,6 +125,20 @@ class GateLinear(ReplicatedLinear):
     def forward(
         self, x: torch.Tensor
     ) -> torch.Tensor | tuple[torch.Tensor, Parameter | None]:
+        groups = invariant_groups()
+        if groups and os.getenv("VLLM_AUDEX_INVARIANT_ROUTER") == "1":
+            output = torch.empty(
+                (x.shape[0], self.weight.shape[0]),
+                dtype=self.out_dtype or x.dtype,
+                device=x.device,
+            )
+            for group in groups:
+                indices = torch.tensor(group.tokens, device=x.device)
+                with suspend_groups():
+                    part = self.forward(x[indices])
+                output[indices] = part[0] if isinstance(part, tuple) else part
+            return output, None
+
         # Tier 1: DSV3 specialized kernel
         if self.allow_dsv3_router_gemm and x.shape[0] <= self._dsv3_max_batch:
             output = ops.dsv3_router_gemm(
