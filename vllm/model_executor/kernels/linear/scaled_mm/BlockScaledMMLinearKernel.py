@@ -118,38 +118,39 @@ class Fp8BlockScaledMMLinearKernel(
         input_2d = x.view(-1, x.shape[-1])
         output_shape = [*x.shape[:-1], weight.shape[0]]
 
-        if self.apply_input_quant:
-            q_input, input_scale = self.quant_fp8(
-                input_2d, input_scale, scale_up, use_triton=self.use_triton
-            )
-        else:
-            q_input = input_2d
-            # Provide a concrete placeholder so apply_block_scaled_mm args are
-            # always Tensors. Subclasses with apply_input_quant=False must not
-            # use As in apply_block_scaled_mm.
-            input_scale = (
-                input_scale if input_scale is not None else input_2d.new_empty(1)
-            )
-
         groups = invariant_groups()
-        if groups and max(max(group.tokens) for group in groups) < q_input.shape[0]:
-            output = q_input.new_empty(
-                (q_input.shape[0], weight.shape[0]), dtype=out_dtype
+        if groups and max(max(group.tokens) for group in groups) < input_2d.shape[0]:
+            output = input_2d.new_empty(
+                (input_2d.shape[0], weight.shape[0]), dtype=out_dtype
             )
             for group in groups:
-                indices = torch.tensor(group.tokens, device=q_input.device)
+                indices = torch.tensor(group.tokens, device=input_2d.device)
+                if self.apply_input_quant:
+                    pair_input, pair_scale = self.quant_fp8(
+                        input_2d[indices],
+                        input_scale,
+                        scale_up,
+                        use_triton=self.use_triton,
+                    )
+                else:
+                    pair_input = input_2d[indices]
+                    pair_scale = input_2d.new_empty(1)
                 pair = self.apply_block_scaled_mm(
-                    A=q_input[indices],
+                    A=pair_input,
                     B=weight,
-                    As=(
-                        input_scale[indices]
-                        if input_scale.shape[0] == q_input.shape[0]
-                        else input_scale
-                    ),
+                    As=pair_scale,
                     Bs=weight_scale,
                 )
                 output[indices] = pair
         else:
+            if self.apply_input_quant:
+                q_input, input_scale = self.quant_fp8(
+                    input_2d, input_scale, scale_up, use_triton=self.use_triton
+                )
+            else:
+                q_input = input_2d
+                # Subclasses with apply_input_quant=False do not use As.
+                input_scale = input_2d.new_empty(1)
             output = self.apply_block_scaled_mm(
                 A=q_input,
                 B=weight,

@@ -157,17 +157,20 @@ class FP8ScaledMMLinearKernel(
         output_shape = [*orig_shape[:-1], w.shape[1]]
         out_dtype = orig_dtype if maybe_out_dtype is None else maybe_out_dtype
 
-        x_2d_q = x_2d
-        if qa is None:
-            x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
         groups = invariant_groups()
-        if groups and max(max(group.tokens) for group in groups) < x_2d_q.shape[0]:
-            output = x_2d_q.new_empty((x_2d_q.shape[0], w.shape[1]), dtype=out_dtype)
+        if groups and max(max(group.tokens) for group in groups) < x_2d.shape[0]:
+            output = x_2d.new_empty((x_2d.shape[0], w.shape[1]), dtype=out_dtype)
             for group in groups:
-                indices = torch.tensor(group.tokens, device=x_2d_q.device)
-                pair_scale = x_s[indices] if x_s.shape[0] == x_2d_q.shape[0] else x_s
+                indices = torch.tensor(group.tokens, device=x_2d.device)
+                if qa is None:
+                    pair_input, pair_scale = self.quant_fp8(
+                        x_2d[indices], x_s, x_s_ub
+                    )
+                else:
+                    pair_input = x_2d[indices]
+                    pair_scale = x_s[indices] if x_s.shape[0] == x_2d.shape[0] else x_s
                 pair = self.apply_scaled_mm(
-                    A=x_2d_q[indices],
+                    A=pair_input,
                     B=w,
                     out_dtype=out_dtype,
                     As=pair_scale,
@@ -178,6 +181,9 @@ class FP8ScaledMMLinearKernel(
                 output[indices] = pair
             return output.view(*output_shape)
 
+        x_2d_q = x_2d
+        if qa is None:
+            x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
         return self.apply_scaled_mm(
             A=x_2d_q,
             B=w,
