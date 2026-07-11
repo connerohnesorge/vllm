@@ -131,7 +131,7 @@ class Fp8BlockScaledMMLinearKernel(
             )
 
         if (
-            os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1"
+            os.getenv("VLLM_AUDEX_INVARIANT_FP8") == "1"
             and q_input.shape[0] > 2
             and q_input.shape[0] % 2 == 0
         ):

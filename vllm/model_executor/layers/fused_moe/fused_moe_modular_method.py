@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -103,6 +104,33 @@ class FusedMoEModularMethod(FusedMoEMethodBase, CustomOp):
         shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor:
         assert self.moe_kernel is not None
+        if (
+            os.getenv("VLLM_AUDEX_INVARIANT_MOE") == "1"
+            and x.shape[0] > 2
+            and x.shape[0] % 2 == 0
+        ):
+            half = x.shape[0] // 2
+            output = torch.empty_like(x)
+            for position in range(half):
+                indices = torch.tensor([position, position + half], device=x.device)
+                output[indices] = self.moe_kernel.apply(
+                    hidden_states=x[indices],
+                    w1=layer.w13_weight,
+                    w2=layer.w2_weight,
+                    topk_weights=topk_weights[indices],
+                    topk_ids=topk_ids[indices],
+                    activation=layer.activation,
+                    global_num_experts=layer.global_num_experts,
+                    apply_router_weight_on_input=layer.apply_router_weight_on_input,
+                    expert_map=layer.expert_map,
+                    shared_experts=shared_experts,
+                    shared_experts_input=(
+                        shared_experts_input[indices]
+                        if shared_experts_input is not None
+                        else None
+                    ),
+                )
+            return output
         return self.moe_kernel.apply(
             hidden_states=x,
             w1=layer.w13_weight,
