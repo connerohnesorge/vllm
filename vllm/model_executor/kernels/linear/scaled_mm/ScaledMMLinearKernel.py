@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -159,6 +160,25 @@ class FP8ScaledMMLinearKernel(
         x_2d_q = x_2d
         if qa is None:
             x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
+        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and x_2d_q.shape[0] > 1:
+            # Match ordinary one-token decode exactly while invariant kernels
+            # are promoted one operation at a time.
+            rows = []
+            for row in range(x_2d_q.shape[0]):
+                row_scale = x_s[row : row + 1] if x_s.shape[0] == x_2d_q.shape[0] else x_s
+                rows.append(
+                    self.apply_scaled_mm(
+                        A=x_2d_q[row : row + 1],
+                        B=w,
+                        out_dtype=out_dtype,
+                        As=row_scale,
+                        Bs=w_s,
+                        bias=bias,
+                        output_shape=[1, w.shape[1]],
+                    )
+                )
+            return torch.cat(rows).view(*output_shape)
+
         return self.apply_scaled_mm(
             A=x_2d_q,
             B=w,

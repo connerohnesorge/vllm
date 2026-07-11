@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar
@@ -129,12 +130,29 @@ class Fp8BlockScaledMMLinearKernel(
                 input_scale if input_scale is not None else input_2d.new_empty(1)
             )
 
-        output = self.apply_block_scaled_mm(
-            A=q_input,
-            B=weight,
-            As=input_scale,
-            Bs=weight_scale,
-        )
+        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and q_input.shape[0] > 1:
+            output = torch.cat(
+                [
+                    self.apply_block_scaled_mm(
+                        A=q_input[row : row + 1],
+                        B=weight,
+                        As=(
+                            input_scale[row : row + 1]
+                            if input_scale.shape[0] == q_input.shape[0]
+                            else input_scale
+                        ),
+                        Bs=weight_scale,
+                    )
+                    for row in range(q_input.shape[0])
+                ]
+            )
+        else:
+            output = self.apply_block_scaled_mm(
+                A=q_input,
+                B=weight,
+                As=input_scale,
+                Bs=weight_scale,
+            )
 
         if bias is not None:
             output = output + bias
