@@ -1009,19 +1009,48 @@ class MambaMixer2(MambaBase, PluggableLayer):
                 state_indices_tensor_d_output = state_indices_tensor_d
 
             # 2. Convolution sequence transformation
-            hidden_states_B_C_d = causal_conv1d_update(
-                hidden_states_B_C_d,
-                conv_state,
-                self.conv_weights,
-                self.conv1d.bias,
-                self.activation,
-                conv_state_indices=state_indices_tensor_d,
-                block_idx_last_scheduled_token=block_idx_last_scheduled_token_d,
-                initial_state_idx=block_idx_last_computed_token_d,
-                num_accepted_tokens=num_accepted_tokens,
-                query_start_loc=query_start_loc_d,
-                max_query_len=state_indices_tensor_d.size(-1),
-            )
+            if (
+                self.num_spec > 1
+                and os.getenv("VLLM_AUDEX_SEQUENTIAL_VERIFY") == "1"
+            ):
+                assert query_start_loc_d is not None
+                assert state_indices_tensor_d_input is not None
+                assert state_indices_tensor_d_output is not None
+                starts = query_start_loc_d[:-1]
+                ends = query_start_loc_d[1:]
+                for position in range(state_indices_tensor_d_input.shape[1]):
+                    active = starts + position < ends
+                    token_indices = starts[active] + position
+                    input_slots = state_indices_tensor_d_input[active, position]
+                    output_slots = state_indices_tensor_d_output[active, position]
+                    slot_pairs = torch.stack((input_slots, output_slots), dim=1)
+                    ones = torch.ones_like(input_slots)
+                    hidden_states_B_C_d[token_indices] = causal_conv1d_update(
+                        hidden_states_B_C_d[token_indices],
+                        conv_state,
+                        self.conv_weights,
+                        self.conv1d.bias,
+                        self.activation,
+                        conv_state_indices=slot_pairs,
+                        block_idx_last_scheduled_token=ones,
+                        initial_state_idx=torch.zeros_like(input_slots),
+                        num_accepted_tokens=ones,
+                        max_query_len=1,
+                    )
+            else:
+                hidden_states_B_C_d = causal_conv1d_update(
+                    hidden_states_B_C_d,
+                    conv_state,
+                    self.conv_weights,
+                    self.conv1d.bias,
+                    self.activation,
+                    conv_state_indices=state_indices_tensor_d,
+                    block_idx_last_scheduled_token=block_idx_last_scheduled_token_d,
+                    initial_state_idx=block_idx_last_computed_token_d,
+                    num_accepted_tokens=num_accepted_tokens,
+                    query_start_loc=query_start_loc_d,
+                    max_query_len=state_indices_tensor_d.size(-1),
+                )
 
             hidden_states_d, B_d, C_d = self.split_hidden_states_B_C_fn(
                 hidden_states_B_C_d
