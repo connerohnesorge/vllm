@@ -10,6 +10,7 @@ use cuda_core::{CudaContext, DeviceBuffer, LaunchConfig};
 use cuda_device::{DisjointSlice, kernel, thread};
 use cuda_host::cuda_module;
 use half::bf16;
+use std::sync::Arc;
 
 #[cuda_module]
 mod kernels {
@@ -61,7 +62,7 @@ fn input_value(i: usize) -> bf16 {
     bf16::from_f32((((i * 37 + 11) % 257) as f32 - 128.0) / 64.0)
 }
 
-fn run(ctx: &CudaContext, m: usize, n: usize, k: usize, a: &[bf16], b: &[bf16]) -> Vec<bf16> {
+fn run(ctx: &Arc<CudaContext>, m: usize, n: usize, k: usize, a: &[bf16], b: &[bf16]) -> Vec<bf16> {
     let stream = ctx.default_stream();
     let a_dev = DeviceBuffer::from_host(&stream, a).unwrap();
     let b_dev = DeviceBuffer::from_host(&stream, b).unwrap();
