@@ -43,16 +43,16 @@ def verification_groups(batch: "InputBatch"):
             "VLLM_AUDEX_INVARIANT_TOPK",
         )
     )
-    if not enabled or not batch.num_draft_tokens:
+    if not enabled:
         yield
         return
 
     roles: dict[str, dict[str, int]] = {}
     for index, request_id in enumerate(batch.req_ids):
-        if request_id.endswith("-cond"):
-            roles.setdefault(request_id[:-5], {})["cond"] = index
-        elif request_id.endswith("-uncond"):
-            roles.setdefault(request_id[:-7], {})["uncond"] = index
+        if request_id.endswith("-cond") or "-cond-" in request_id:
+            roles.setdefault(request_id.rsplit("-cond", 1)[0], {})["cond"] = index
+        elif request_id.endswith("-uncond") or "-uncond-" in request_id:
+            roles.setdefault(request_id.rsplit("-uncond", 1)[0], {})["uncond"] = index
 
     grouped: list[VerificationGroup] = []
     covered: set[int] = set()
