@@ -1391,7 +1391,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Run model.
         sequential_output = None
         if (
-            input_batch.num_draft_tokens
+            not dummy_run
+            and input_batch.num_draft_tokens
             and self.model_state.__class__.__name__ == "MambaHybridModelState"
             and not np.any(input_batch.is_prefilling_np)
         ):
