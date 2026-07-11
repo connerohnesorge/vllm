@@ -18,9 +18,11 @@
 # limitations under the License.
 """Inference-only NemotronH model."""
 
+import os
 import typing
 from collections.abc import Callable, Iterable
 from itertools import islice
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -616,6 +618,24 @@ class NemotronHModel(nn.Module, EagleModelMixin):
                 hidden_states=hidden_states,
                 residual=residual,
             )
+            capture_root = os.getenv("AUDEX_LAYER_BOUNDARY_CAPTURE_DIR")
+            if (
+                capture_root
+                and Path("/tmp/audex-enable-layer-capture").exists()
+                and hidden_states.shape[0] <= 8
+            ):
+                capture_path = Path(capture_root) / (
+                    f"layer-{idx}-q{hidden_states.shape[0]}.pt"
+                )
+                if not capture_path.exists():
+                    capture_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(
+                        {
+                            "hidden": hidden_states.detach().to("cpu", torch.bfloat16),
+                            "residual": residual.detach().to("cpu", torch.bfloat16),
+                        },
+                        capture_path,
+                    )
             self._maybe_add_hidden_state(
                 aux_hidden_states, idx + 1, hidden_states, residual
             )
