@@ -44,7 +44,7 @@ def verification_groups(batch: "InputBatch"):
             "VLLM_AUDEX_INVARIANT_TOPK",
         )
     )
-    if not enabled or batch.is_prefilling_np.any():
+    if not enabled:
         yield
         return
 
@@ -64,6 +64,10 @@ def verification_groups(batch: "InputBatch"):
         cond, uncond = pair["cond"], pair["uncond"]
         cond_len = int(starts[cond + 1] - starts[cond])
         uncond_len = int(starts[uncond + 1] - starts[uncond])
+        if batch.is_prefilling_np[cond] or batch.is_prefilling_np[uncond]:
+            covered.update(range(int(starts[cond]), int(starts[cond + 1])))
+            covered.update(range(int(starts[uncond]), int(starts[uncond + 1])))
+            continue
         if cond_len != uncond_len:
             raise RuntimeError("CFG verification rows have unequal lengths")
         for position in range(cond_len):
@@ -76,6 +80,8 @@ def verification_groups(batch: "InputBatch"):
             covered.update(group.tokens)
 
     for request in range(batch.num_reqs):
+        if batch.is_prefilling_np[request]:
+            continue
         length = int(starts[request + 1] - starts[request])
         for position in range(length):
             index = int(starts[request] + position)
