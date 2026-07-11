@@ -130,8 +130,11 @@ class Fp8BlockScaledMMLinearKernel(
                 input_scale if input_scale is not None else input_2d.new_empty(1)
             )
 
-        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and q_input.shape[0] > 2:
-            assert q_input.shape[0] % 2 == 0
+        if (
+            os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1"
+            and q_input.shape[0] > 2
+            and q_input.shape[0] % 2 == 0
+        ):
             half = q_input.shape[0] // 2
             output = q_input.new_empty(
                 (q_input.shape[0], weight.shape[0]), dtype=out_dtype

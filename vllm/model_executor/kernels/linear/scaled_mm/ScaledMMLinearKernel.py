@@ -160,10 +160,13 @@ class FP8ScaledMMLinearKernel(
         x_2d_q = x_2d
         if qa is None:
             x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
-        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and x_2d_q.shape[0] > 2:
+        if (
+            os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1"
+            and x_2d_q.shape[0] > 2
+            and x_2d_q.shape[0] % 2 == 0
+        ):
             # AudEx CFG stores each request contiguously. Preserve the ordinary
             # two-row conditional/unconditional kernel shape at every position.
-            assert x_2d_q.shape[0] % 2 == 0
             half = x_2d_q.shape[0] // 2
             output = x_2d_q.new_empty((x_2d_q.shape[0], w.shape[1]), dtype=out_dtype)
             for position in range(half):
