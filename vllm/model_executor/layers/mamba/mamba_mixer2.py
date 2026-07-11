@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -532,6 +534,13 @@ class MambaMixer2(MambaBase, PluggableLayer):
         hidden_states: torch.Tensor,
         mup_vector: torch.Tensor | None = None,
     ):
+        capture_root = os.getenv("AUDEX_MAMBA_CAPTURE_DIR")
+        capture_path = None
+        if capture_root and hidden_states.shape[0] <= 8:
+            capture_path = Path(capture_root) / (
+                self.prefix.replace(".", "_") + f"-q{hidden_states.shape[0]}.pt"
+            )
+
         # 1. Gated MLP's linear projection
         projected_states, _ = self.in_proj(hidden_states)
         if mup_vector is not None:
@@ -565,6 +574,18 @@ class MambaMixer2(MambaBase, PluggableLayer):
 
         # 5. Final linear projection
         output, _ = self.out_proj(hidden_states)
+
+        if capture_path is not None and not capture_path.exists():
+            capture_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "projected": projected_states.detach().to("cpu", torch.bfloat16),
+                    "ssm": ssm_output.detach().to("cpu", torch.bfloat16),
+                    "norm": hidden_states.detach().to("cpu", torch.bfloat16),
+                    "output": output.detach().to("cpu", torch.bfloat16),
+                },
+                capture_path,
+            )
 
         return output
 
