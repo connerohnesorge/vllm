@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -21,6 +20,7 @@ from vllm.model_executor.layers.fused_moe.modular_kernel import (
 from vllm.model_executor.layers.fused_moe.runner.shared_experts import (
     SharedExperts,
 )
+from vllm.model_executor.layers.audex_invariant import groups as invariant_groups
 
 if TYPE_CHECKING:
     from vllm.model_executor.layers.fused_moe.routed_experts import (
@@ -104,15 +104,11 @@ class FusedMoEModularMethod(FusedMoEMethodBase, CustomOp):
         shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor:
         assert self.moe_kernel is not None
-        if (
-            os.getenv("VLLM_AUDEX_INVARIANT_MOE") == "1"
-            and x.shape[0] > 2
-            and x.shape[0] % 2 == 0
-        ):
-            half = x.shape[0] // 2
+        groups = invariant_groups()
+        if groups:
             output = torch.empty_like(x)
-            for position in range(half):
-                indices = torch.tensor([position, position + half], device=x.device)
+            for group in groups:
+                indices = torch.tensor(group, device=x.device)
                 output[indices] = self.moe_kernel.apply(
                     hidden_states=x[indices],
                     w1=layer.w13_weight,
