@@ -536,7 +536,11 @@ class MambaMixer2(MambaBase, PluggableLayer):
     ):
         capture_root = os.getenv("AUDEX_MAMBA_CAPTURE_DIR")
         capture_path = None
-        if capture_root and hidden_states.shape[0] <= 8:
+        if (
+            capture_root
+            and Path("/tmp/audex-enable-mamba-capture").exists()
+            and hidden_states.shape[0] <= 8
+        ):
             capture_path = Path(capture_root) / (
                 self.prefix.replace(".", "_") + f"-q{hidden_states.shape[0]}.pt"
             )
