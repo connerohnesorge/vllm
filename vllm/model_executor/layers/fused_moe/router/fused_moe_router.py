@@ -2,10 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+import os
 
 import torch
 
 from vllm.distributed.eplb.eplb_state import EplbLayerState
+from vllm.model_executor.layers.audex_invariant import groups as invariant_groups
 from vllm.model_executor.layers.fused_moe.config import RoutingMethodType
 
 
@@ -64,12 +66,34 @@ class FusedMoERouter(ABC):
             plain MoE implementations without redundant experts.
         """
 
-        topk_weights, topk_ids = self._select_experts(
-            hidden_states,
-            router_logits,
-            topk_indices_dtype=topk_indices_dtype,
-            input_ids=input_ids,
-        )
+        groups = invariant_groups()
+        if groups and os.getenv("VLLM_AUDEX_INVARIANT_TOPK") == "1":
+            topk_weights = topk_ids = None
+            for group in groups:
+                indices = torch.tensor(group.tokens, device=hidden_states.device)
+                group_weights, group_ids = self._select_experts(
+                    hidden_states[indices],
+                    router_logits[indices],
+                    topk_indices_dtype=topk_indices_dtype,
+                    input_ids=input_ids[indices] if input_ids is not None else None,
+                )
+                if topk_weights is None:
+                    topk_weights = group_weights.new_empty(
+                        (hidden_states.shape[0], *group_weights.shape[1:])
+                    )
+                    topk_ids = group_ids.new_empty(
+                        (hidden_states.shape[0], *group_ids.shape[1:])
+                    )
+                topk_weights[indices] = group_weights
+                topk_ids[indices] = group_ids
+            assert topk_weights is not None and topk_ids is not None
+        else:
+            topk_weights, topk_ids = self._select_experts(
+                hidden_states,
+                router_logits,
+                topk_indices_dtype=topk_indices_dtype,
+                input_ids=input_ids,
+            )
 
         # Write routing data for non-monolithic path (Triton, etc.)
         # (set by bind_routing_capture_to_model during capturer init)
