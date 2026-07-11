@@ -44,7 +44,7 @@ def verification_groups(batch: "InputBatch"):
             "VLLM_AUDEX_INVARIANT_TOPK",
         )
     )
-    if not enabled:
+    if not enabled or batch.is_prefilling_np.any():
         yield
         return
 
