@@ -160,24 +160,28 @@ class FP8ScaledMMLinearKernel(
         x_2d_q = x_2d
         if qa is None:
             x_2d_q, x_s = self.quant_fp8(x_2d, x_s, x_s_ub)
-        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and x_2d_q.shape[0] > 1:
-            # Match ordinary one-token decode exactly while invariant kernels
-            # are promoted one operation at a time.
-            rows = []
-            for row in range(x_2d_q.shape[0]):
-                row_scale = x_s[row : row + 1] if x_s.shape[0] == x_2d_q.shape[0] else x_s
-                rows.append(
-                    self.apply_scaled_mm(
-                        A=x_2d_q[row : row + 1],
-                        B=w,
-                        out_dtype=out_dtype,
-                        As=row_scale,
-                        Bs=w_s,
-                        bias=bias,
-                        output_shape=[1, w.shape[1]],
-                    )
+        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and x_2d_q.shape[0] > 2:
+            # AudEx CFG stores each request contiguously. Preserve the ordinary
+            # two-row conditional/unconditional kernel shape at every position.
+            assert x_2d_q.shape[0] % 2 == 0
+            half = x_2d_q.shape[0] // 2
+            output = x_2d_q.new_empty((x_2d_q.shape[0], w.shape[1]), dtype=out_dtype)
+            for position in range(half):
+                indices = torch.tensor(
+                    [position, position + half], device=x_2d_q.device
                 )
-            return torch.cat(rows).view(*output_shape)
+                pair_scale = x_s[indices] if x_s.shape[0] == x_2d_q.shape[0] else x_s
+                pair = self.apply_scaled_mm(
+                    A=x_2d_q[indices],
+                    B=w,
+                    out_dtype=out_dtype,
+                    As=pair_scale,
+                    Bs=w_s,
+                    bias=bias,
+                    output_shape=[2, w.shape[1]],
+                )
+                output[indices] = pair
+            return output.view(*output_shape)
 
         return self.apply_scaled_mm(
             A=x_2d_q,

@@ -130,22 +130,27 @@ class Fp8BlockScaledMMLinearKernel(
                 input_scale if input_scale is not None else input_2d.new_empty(1)
             )
 
-        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and q_input.shape[0] > 1:
-            output = torch.cat(
-                [
-                    self.apply_block_scaled_mm(
-                        A=q_input[row : row + 1],
-                        B=weight,
-                        As=(
-                            input_scale[row : row + 1]
-                            if input_scale.shape[0] == q_input.shape[0]
-                            else input_scale
-                        ),
-                        Bs=weight_scale,
-                    )
-                    for row in range(q_input.shape[0])
-                ]
+        if os.getenv("VLLM_AUDEX_INVARIANT_VERIFICATION") == "1" and q_input.shape[0] > 2:
+            assert q_input.shape[0] % 2 == 0
+            half = q_input.shape[0] // 2
+            output = q_input.new_empty(
+                (q_input.shape[0], weight.shape[0]), dtype=out_dtype
             )
+            for position in range(half):
+                indices = torch.tensor(
+                    [position, position + half], device=q_input.device
+                )
+                pair = self.apply_block_scaled_mm(
+                    A=q_input[indices],
+                    B=weight,
+                    As=(
+                        input_scale[indices]
+                        if input_scale.shape[0] == q_input.shape[0]
+                        else input_scale
+                    ),
+                    Bs=weight_scale,
+                )
+                output[indices] = pair
         else:
             output = self.apply_block_scaled_mm(
                 A=q_input,
