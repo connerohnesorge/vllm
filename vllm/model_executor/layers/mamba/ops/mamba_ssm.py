@@ -454,6 +454,14 @@ def _selective_scan_update_kernel(
             out *= z * tl.sigmoid(z)
         tl.store(out_ptrs, out, mask=offs_m < dim)
 
+        # A normal decode stores the recurrent state after every token, so the
+        # next step reads it back in the cache dtype. Match that rounding here
+        # when verifying several speculative tokens in one kernel invocation.
+        # Without it, the FP32 accumulator spans draft positions and can select
+        # different tokens than sequential decoding for near-tied logits.
+        if IS_SPEC_DECODING:
+            state = state.to(token_dst_ptrs.dtype.element_ty).to(tl.float32)
+
         x_ptr += stride_x_batch
         dt_ptr += stride_dt_batch
         B_ptr += stride_B_batch

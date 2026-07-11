@@ -979,6 +979,65 @@ def test_selective_state_update_with_num_accepted_tokens(
             assert torch.allclose(state[dst_slot], state_ref, rtol=rtol, atol=atol)
 
 
+def test_speculative_state_update_is_sequentially_equivalent():
+    """A multi-token verification must match repeated decode cache rounding."""
+    device = DEVICE
+    set_random_seed(0)
+    num_tokens, dim, dstate = 4, 128, 16
+    state = torch.randn(8, dim, dstate, dtype=torch.bfloat16, device=device)
+    sequential_state = state.clone()
+    x = torch.randn(num_tokens, dim, dtype=torch.bfloat16, device=device)
+    dt = torch.randn_like(x)
+    A = -torch.rand(dim, dstate, device=device) - 1.0
+    B = torch.randn(num_tokens, dstate, device=device)
+    C = torch.randn(num_tokens, dstate, device=device)
+    D = torch.randn(dim, device=device)
+    dt_bias = torch.rand(dim, device=device) - 4.0
+
+    state_indices = torch.tensor([[1, 2, 3, 4]], dtype=torch.int32, device=device)
+    dst_indices = torch.tensor([[2, 3, 4, 5]], dtype=torch.int32, device=device)
+    cu_seqlens = torch.tensor([0, num_tokens], dtype=torch.int32, device=device)
+    accepted = torch.ones(1, dtype=torch.int32, device=device)
+    speculative_out = torch.empty_like(x)
+    selective_state_update(
+        state,
+        x,
+        dt,
+        A,
+        B,
+        C,
+        D=D,
+        dt_bias=dt_bias,
+        dt_softplus=True,
+        state_batch_indices=state_indices,
+        dst_state_batch_indices=dst_indices,
+        out=speculative_out,
+        num_accepted_tokens=accepted,
+        cu_seqlens=cu_seqlens,
+    )
+
+    sequential_out = torch.empty_like(x)
+    for token_idx in range(num_tokens):
+        slot = state_indices[0, token_idx : token_idx + 1]
+        selective_state_update(
+            sequential_state,
+            x[token_idx : token_idx + 1],
+            dt[token_idx : token_idx + 1],
+            A,
+            B[token_idx : token_idx + 1],
+            C[token_idx : token_idx + 1],
+            D=D,
+            dt_bias=dt_bias,
+            dt_softplus=True,
+            state_batch_indices=slot,
+            dst_state_batch_indices=dst_indices[0, token_idx : token_idx + 1],
+            out=sequential_out[token_idx : token_idx + 1],
+        )
+
+    assert torch.equal(speculative_out, sequential_out)
+    assert torch.equal(state[dst_indices], sequential_state[dst_indices])
+
+
 @pytest.mark.parametrize("itype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("has_z", [False, True])
 @pytest.mark.parametrize("dstate", [16, 64])
