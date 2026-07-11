@@ -7,6 +7,7 @@ import torch
 from vllm.config import SpeculativeConfig
 from vllm.triton_utils import tl, triton
 from vllm.v1.outputs import LogprobsTensors
+from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
 from vllm.v1.spec_decode.utils import unconditional_to_conditional_rates
 from vllm.v1.worker.gpu.input_batch import (
     InputBatch,
@@ -132,6 +133,13 @@ class RejectionSampler:
 
         draft_sampled = input_batch.input_ids[input_batch.logits_indices]
         pos = input_batch.positions[input_batch.logits_indices]
+        sequential = os.getenv("VLLM_AUDEX_SEQUENTIAL_VERIFY") == "1"
+        lengths = (
+            input_batch.cu_num_logits_np[1:]
+            - input_batch.cu_num_logits_np[:-1]
+        )
+        if sequential and not (lengths == lengths[0]).all():
+            raise RuntimeError("sequential verification requires equal row lengths")
         processed_logits = self.sampler.apply_sampling_params(
             logits,
             input_batch.expanded_idx_mapping,
@@ -139,15 +147,25 @@ class RejectionSampler:
             pos,
             draft_sampled,
             input_batch.expanded_local_pos,
+            skip_top_k_top_p=sequential,
         )
-        if os.getenv("VLLM_AUDEX_SEQUENTIAL_VERIFY") == "1":
-            lengths = (
-                input_batch.cu_num_logits_np[1:]
-                - input_batch.cu_num_logits_np[:-1]
-            )
-            if not (lengths == lengths[0]).all():
-                raise RuntimeError("sequential verification requires equal row lengths")
+        if sequential:
             q = int(lengths[0])
+            top_k, top_p = self.sampler.sampling_states.get_top_k_top_p(
+                input_batch.expanded_idx_mapping, input_batch.idx_mapping_np
+            )
+            for position in range(q):
+                rows = torch.arange(
+                    position,
+                    processed_logits.shape[0],
+                    q,
+                    device=processed_logits.device,
+                )
+                position_k = None if top_k is None else top_k[rows]
+                position_p = None if top_p is None else top_p[rows]
+                processed_logits[rows] = apply_top_k_top_p(
+                    processed_logits[rows], position_k, position_p
+                )
             target_sampled = gumbel_sample(
                 processed_logits,
                 input_batch.expanded_idx_mapping,
