@@ -43,7 +43,7 @@ def verification_groups(batch: "InputBatch"):
             "VLLM_AUDEX_INVARIANT_TOPK",
         )
     )
-    if not enabled:
+    if not enabled or batch.num_draft_tokens == 0:
         yield
         return
 
