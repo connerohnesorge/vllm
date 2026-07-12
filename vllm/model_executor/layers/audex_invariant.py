@@ -57,10 +57,17 @@ def verification_groups(batch: "InputBatch"):
     grouped: list[VerificationGroup] = []
     covered: set[int] = set()
     starts = batch.query_start_loc_np
+    drafts = batch.num_draft_tokens_per_req
     for pair in roles.values():
         if pair.keys() < {"cond", "uncond"}:
             continue
         cond, uncond = pair["cond"], pair["uncond"]
+        cond_drafts = int(drafts[cond]) if drafts is not None else 0
+        uncond_drafts = int(drafts[uncond]) if drafts is not None else 0
+        if cond_drafts == 0 and uncond_drafts == 0:
+            continue
+        if cond_drafts != uncond_drafts:
+            raise RuntimeError("CFG verification pair has unequal draft lengths")
         cond_len = int(starts[cond + 1] - starts[cond])
         uncond_len = int(starts[uncond + 1] - starts[uncond])
         if cond_len != uncond_len:
